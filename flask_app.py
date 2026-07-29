@@ -36,8 +36,8 @@ def b64_to_image_reader(b64str):
     except:
         return None
 
-def crop_to_fill(b64str, target_w_mm, target_h_mm):
-    """画像をセルサイズいっぱいにクロップ（アスペクト比を保ちつつ中央切り出し）"""
+def fit_in_box(b64str):
+    """base64画像をImageReaderに変換（アスペクト比そのまま）"""
     if not b64str:
         return None
     try:
@@ -47,22 +47,11 @@ def crop_to_fill(b64str, target_w_mm, target_h_mm):
         img = Image.open(io.BytesIO(img_data))
         if img.mode in ('RGBA', 'P'):
             img = img.convert('RGB')
-
-        iw, ih = img.size
-        target_ratio = target_w_mm / target_h_mm
-        img_ratio = iw / ih
-
-        if img_ratio > target_ratio:
-            # 画像が横長すぎる → 横をクロップ
-            new_w = int(ih * target_ratio)
-            left = (iw - new_w) // 2
-            img = img.crop((left, 0, left + new_w, ih))
-        else:
-            # 画像が縦長すぎる → 縦をクロップ
-            new_h = int(iw / target_ratio)
-            top = (ih - new_h) // 2
-            img = img.crop((0, top, iw, top + new_h))
-
+        # EXIF回転を考慮
+        try:
+            from PIL import ImageOps
+            img = ImageOps.exif_transpose(img)
+        except: pass
         buf = io.BytesIO()
         img.save(buf, format='JPEG', quality=85)
         buf.seek(0)
@@ -71,7 +60,7 @@ def crop_to_fill(b64str, target_w_mm, target_h_mm):
         return None
 
 def draw_photos(c, photos, left_mm, top_mm, width_mm, height_mm):
-    """写真をセルいっぱいにクロップ表示（全セル同じサイズに統一）"""
+    """写真をアスペクト比維持・枠内フィット・中央配置で描画"""
     photos = [p for p in (photos or []) if p]
     if not photos:
         return False
@@ -84,15 +73,26 @@ def draw_photos(c, photos, left_mm, top_mm, width_mm, height_mm):
     box_bottom_pt = H - (top_mm + height_mm) * mm
 
     for i, b64 in enumerate(photos[:n]):
-        cropped_reader = crop_to_fill(b64, cell_w_mm, cell_h_mm)
-        if not cropped_reader:
+        reader = fit_in_box(b64)
+        if not reader:
             continue
         try:
+            iw, ih = reader.getSize()
             cell_w_pt = cell_w_mm * mm
             cell_h_pt = cell_h_mm * mm
+
+            # アスペクト比維持で枠内に収まる最大サイズ計算
+            scale = min(cell_w_pt / iw, cell_h_pt / ih)
+            dw = iw * scale
+            dh = ih * scale
+
+            # セル内で中央配置
             cell_x = (left_mm + pad + i * cell_w_mm) * mm
             cell_y = box_bottom_pt + pad * mm
-            c.drawImage(cropped_reader, cell_x, cell_y, width=cell_w_pt, height=cell_h_pt, mask='auto')
+            dx = cell_x + (cell_w_pt - dw) / 2
+            dy = cell_y + (cell_h_pt - dh) / 2
+
+            c.drawImage(reader, dx, dy, width=dw, height=dh, mask='auto')
         except Exception:
             continue
     return True
